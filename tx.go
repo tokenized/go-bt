@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/libsv/go-bk/crypto"
+	"github.com/tokenized/pkg/bitcoin"
 
 	"github.com/libsv/go-bt/v2/bscript"
 )
@@ -126,6 +127,51 @@ func NewTxFromStream(b []byte) (*Tx, int, error) {
 	offset += 4
 
 	return &t, offset, nil
+}
+
+func (tx *Tx) UnmarshalBinary(b []byte) error {
+	if len(b) < 10 {
+		return ErrTxTooShort
+	}
+
+	var offset int
+	tx.Version = binary.LittleEndian.Uint32(b[offset:4])
+	offset += 4
+
+	inputCount, size := NewVarIntFromBytes(b[offset:])
+	offset += size
+
+	// create Inputs
+	var i uint64
+	var err error
+	var input *Input
+	for ; i < uint64(inputCount); i++ {
+		input, size, err = newInputFromBytes(b[offset:])
+		if err != nil {
+			return err
+		}
+		offset += size
+		tx.addInput(input)
+	}
+
+	// create Outputs
+	var outputCount VarInt
+	var output *Output
+	outputCount, size = NewVarIntFromBytes(b[offset:])
+	offset += size
+	for i = 0; i < uint64(outputCount); i++ {
+		output, size, err = newOutputFromBytes(b[offset:])
+		if err != nil {
+			return err
+		}
+		offset += size
+		tx.AddOutput(output)
+	}
+
+	tx.LockTime = binary.LittleEndian.Uint32(b[offset:])
+	offset += 4
+
+	return nil
 }
 
 // ReadFrom reads from the `io.Reader` into the `bt.Tx`.
@@ -276,6 +322,11 @@ func (tx *Tx) TxIDBytes() []byte {
 	return ReverseBytes(crypto.Sha256d(tx.Bytes()))
 }
 
+func (tx *Tx) TxHash() *bitcoin.Hash32 {
+	txid, _ := bitcoin.NewHash32(crypto.Sha256d(tx.Bytes()))
+	return txid
+}
+
 // TxID returns the transaction ID of the transaction
 // (which is also the transaction hash).
 func (tx *Tx) TxID() string {
@@ -296,8 +347,12 @@ func IsValidTxID(txid []byte) bool {
 
 // Bytes encodes the transaction into a byte array.
 // See https://chainquery.com/bitcoin-cli/decoderawtransaction
-func (tx *Tx) Bytes() []byte {
+func (tx Tx) Bytes() []byte {
 	return tx.toBytesHelper(0, nil)
+}
+
+func (tx Tx) MarshalBinary() ([]byte, error) {
+	return tx.Bytes(), nil
 }
 
 // BytesWithClearedInputs encodes the transaction into a byte array but clears its Inputs first.
@@ -343,7 +398,7 @@ func (tt *Txs) NodeJSON() interface{} {
 	return (*nodeTxsWrapper)(tt)
 }
 
-func (tx *Tx) toBytesHelper(index int, lockingScript []byte) []byte {
+func (tx Tx) toBytesHelper(index int, lockingScript []byte) []byte {
 	h := make([]byte, 0)
 
 	h = append(h, LittleEndianBytes(tx.Version, 4)...)
